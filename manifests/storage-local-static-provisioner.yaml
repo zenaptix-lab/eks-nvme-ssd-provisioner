@@ -1,88 +1,126 @@
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: local-storage-provisioner-pv-binding
-subjects:
-- kind: ServiceAccount
-  name: local-storage-admin
-  namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  name: system:persistent-volume-provisioner
-  apiGroup: rbac.authorization.k8s.io
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: local-storage-provisioner-node-clusterrole
-rules:
-- apiGroups: [""]
-  resources: ["nodes"]
-  verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: local-storage-provisioner-node-binding
-subjects:
-- kind: ServiceAccount
-  name: local-storage-admin
-  namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  name: local-storage-provisioner-node-clusterrole
-  apiGroup: rbac.authorization.k8s.io
----
+# Source: provisioner/templates/serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: local-storage-admin
+  name: local-provisioner
   namespace: kube-system
+  labels:
+    helm.sh/chart: provisioner-2.6.0-alpha.1
+    app.kubernetes.io/name: provisioner
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: local-provisioner
 ---
+# Source: provisioner/templates/configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: local-provisioner-config
   namespace: kube-system
+  labels:
+    helm.sh/chart: provisioner-2.6.0-alpha.1
+    app.kubernetes.io/name: provisioner
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: local-provisioner
 data:
-  setPVOwnerRef: "true"
-  useNodeNameOnly: "true"
   storageClassMap: |
     local-storage:
-       hostDir: /pv-disks
-       mountDir: /pv-disks
+      hostDir: /pv-disks
+      mountDir: /pv-disks
 ---
+# Source: provisioner/templates/storageclass.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+  labels:
+    helm.sh/chart: provisioner-2.6.0-alpha.1
+    app.kubernetes.io/name: provisioner
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: local-provisioner
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+---
+# Source: provisioner/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: local-provisioner-node-clusterrole
+  labels:
+    helm.sh/chart: provisioner-2.6.0-alpha.1
+    app.kubernetes.io/name: provisioner
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: local-provisioner
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumes"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["watch"]
+- apiGroups: ["", "events.k8s.io"]
+  resources: ["events"]
+  verbs: ["create", "update", "patch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+---
+# Source: provisioner/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-provisioner-node-binding
+  labels:
+    helm.sh/chart: provisioner-2.6.0-alpha.1
+    app.kubernetes.io/name: provisioner
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: local-provisioner
+subjects:
+- kind: ServiceAccount
+  name: local-provisioner
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: local-provisioner-node-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: provisioner/templates/daemonset_linux.yaml
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: local-volume-provisioner
+  name: local-provisioner
   namespace: kube-system
   labels:
-    app: local-volume-provisioner
+    helm.sh/chart: provisioner-2.6.0-alpha.1
+    app.kubernetes.io/name: provisioner
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: local-provisioner
 spec:
   selector:
     matchLabels:
-      app: local-volume-provisioner
+      app.kubernetes.io/name: provisioner
+      app.kubernetes.io/instance: local-provisioner
   template:
     metadata:
       labels:
-        app: local-volume-provisioner
+        app.kubernetes.io/name: provisioner
+        app.kubernetes.io/instance: local-provisioner
+      annotations:
+        checksum/config: ec7cfc81ed1c712f1cc4239c308b036b277b110acaff7167b4da694a9ec01db9
     spec:
-      serviceAccountName: local-storage-admin
+      serviceAccountName: local-provisioner
       nodeSelector:
+        kubernetes.io/os: linux
         aws.amazon.com/eks-local-ssd: "true"
       containers:
-        - image: "quay.io/external_storage/local-volume-provisioner:v2.3.3"
-          name: provisioner
+        - name: provisioner
+          image: k8s.gcr.io/sig-storage/local-volume-provisioner:v2.4.0
           securityContext:
             privileged: true
-          resources:
-            limits:
-              cpu: 100m
-              memory: 200Mi
-            requests:
-              cpu: 50m
-              memory: 100Mi
           env:
           - name: MY_NODE_NAME
             valueFrom:
@@ -93,16 +131,19 @@ spec:
               fieldRef:
                 fieldPath: metadata.namespace
           - name: JOB_CONTAINER_IMAGE
-            value: "quay.io/external_storage/local-volume-provisioner:canary"
+            value: k8s.gcr.io/sig-storage/local-volume-provisioner:v2.4.0
+          ports:
+          - name: metrics
+            containerPort: 8080
           volumeMounts:
-            - mountPath: /etc/provisioner/config
-              name: provisioner-config
+            - name: provisioner-config
+              mountPath: /etc/provisioner/config
               readOnly: true
-            - mountPath: /dev
-              name: provisioner-dev
-            - mountPath: /pv-disks
-              name: local-storage
-              mountPropagation: "HostToContainer"
+            - name: provisioner-dev
+              mountPath: /dev
+            - name: local-storage
+              mountPath: /pv-disks
+              mountPropagation: HostToContainer
       volumes:
         - name: provisioner-config
           configMap:
@@ -113,11 +154,3 @@ spec:
         - name: local-storage
           hostPath:
             path: /pv-disks
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: local-storage
-provisioner: kubernetes.io/no-provisioner
-volumeBindingMode: WaitForFirstConsumer
-reclaimPolicy: Delete
