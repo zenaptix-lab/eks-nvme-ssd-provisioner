@@ -2,9 +2,9 @@ automountServiceAccountToken: false
 priorityClassName: system-node-critical
 
 image:
-  repository: eu.gcr.io/brunsgaard-public/eks-nvme-ssd-provisioner
+  repository: ghcr.io/zenaptix-lab/eks-nvme-ssd-provisioner
   pullPolicy: IfNotPresent
-  tag: v1.0.0
+  tag: 1.0.1
 
 imagePullSecrets: []
 nameOverride: ""
